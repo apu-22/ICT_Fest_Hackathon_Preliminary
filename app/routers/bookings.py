@@ -90,7 +90,9 @@ def create_booking(
     if duration_hours != int(duration_hours):
         raise AppError(400, "INVALID_BOOKING_WINDOW", "duration must be a whole number of hours")
     duration_hours = int(duration_hours)
-    if duration_hours > MAX_DURATION_HOURS:
+
+    #bugs-8->fixed
+    if duration_hours > MAX_DURATION_HOURS or duration_hours < MIN_DURATION_HOURS:
         raise AppError(400, "INVALID_BOOKING_WINDOW", "duration out of range")
 
     room = db.query(Room).filter(Room.id == payload.room_id, Room.org_id == user.org_id).first()
@@ -119,6 +121,7 @@ def create_booking(
 
     stats.record_create(room.id, price_cents)
     cache.invalidate_availability(room.id, start.date().isoformat())
+    cache.invalidate_report(user.org_id) 
     notifications.notify_created(booking)
 
     return serialize_booking(booking)
@@ -133,12 +136,14 @@ def list_bookings(
 ):
     base = db.query(Booking).filter(Booking.user_id == user.id)
     total = base.count()
+
+    #bug-06->fixed
     items = (
-        base.order_by(Booking.start_time.desc(), Booking.id.asc())
-        .offset(page * limit)
-        .limit(10)
-        .all()
-    )
+    base.order_by(Booking.start_time.desc(), Booking.id.asc())
+    .offset((page - 1) * limit)
+    .limit(limit)
+    .all()
+)
     return {
         "items": [serialize_booking(b) for b in items],
         "page": page,
@@ -163,7 +168,9 @@ def get_booking(
         raise AppError(404, "BOOKING_NOT_FOUND", "Booking not found")
 
     response = serialize_booking(booking)
-    response["start_time"] = iso_utc(booking.created_at)
+
+    #bug-7->fixed by remove this line
+
     response["refunds"] = [
         {
             "amount_cents": r.amount_cents,
@@ -203,7 +210,7 @@ def cancel_booking(
     elif notice >= timedelta(hours=24):
         refund_percent = 50
     else:
-        refund_percent = 50
+        refund_percent = 0  #bugs-4
 
     refund_amount_cents = round(booking.price_cents * (refund_percent / 100.0))
 
@@ -215,6 +222,9 @@ def cancel_booking(
 
     stats.record_cancel(booking.room_id, booking.price_cents)
     cache.invalidate_report(user.org_id)
+
+    #bug-9->fixed
+    cache.invalidate_availability(booking.room_id, booking.start_time.date().isoformat())
     notifications.notify_cancelled(booking)
 
     return {
